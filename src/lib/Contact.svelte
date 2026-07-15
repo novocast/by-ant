@@ -6,60 +6,13 @@
 
   let scrollY = 0
   let rocketState: 'idle' | 'filling' | 'launching' | 'flying' = 'idle'
-  let smokeParticles: SmokeParticle[] = []
   let rocketY = 0
-  let launchProgress = 0
+  let rumbleX = 0
+  let rumbleY = 0
   let formSubmitting = false
   let formSuccess = false
   let contactSection: HTMLElement
-  let animFrame: number
-
-  // Full-screen flame overlay canvas for two SRB flames
-  let flameCanvas: HTMLCanvasElement
-  let flameCtx: CanvasRenderingContext2D | null = null
-  let flameTime = 0
-  let flameAnimFrame: number
-
-  // Shuttle geometry (for calculating SRB positions)
-  const SHUTTLE_CENTER_VW = 31       // ~31% of browser width
-  const SHUTTLE_WIDTH_VW = 17
-  const SHUTTLE_BOTTOM_VW = 14       // shuttle bottom inset from page bottom
-  const LEFT_SRB_PCT = 0.131         // 13.1% from shuttle left edge
-  const RIGHT_SRB_PCT = 0.698        // 69.8% from shuttle left edge
-
-  interface SmokeParticle {
-    id: number
-    x: number
-    y: number
-    size: number
-    opacity: number
-    vx: number
-    vy: number
-    rot: number
-    rotSpeed: number
-    groundLevel: number  // y at which ground spread kicks in
-  }
-
-  /** Convert vw to pixels */
-  function vw(percent: number): number {
-    return (percent / 100) * window.innerWidth
-  }
-
-  /** Calculate SRB nozzle positions in viewport coordinates */
-  function getSrbPositions(): { leftX: number; rightX: number; engineY: number } {
-    const shuttleLeft = vw(SHUTTLE_CENTER_VW) - vw(SHUTTLE_WIDTH_VW) / 2
-    const shuttleWidth = vw(SHUTTLE_WIDTH_VW)
-    const leftX = shuttleLeft + shuttleWidth * LEFT_SRB_PCT
-    const rightX = shuttleLeft + shuttleWidth * RIGHT_SRB_PCT
-    const engineY = window.innerHeight - vw(SHUTTLE_BOTTOM_VW)
-    return { leftX, rightX, engineY }
-  }
-
-  const formFields = [
-    { id: 'name', label: 'Your Name', type: 'text', placeholder: 'Cosmonaut...' },
-    { id: 'email', label: 'Email', type: 'email', placeholder: 'mission@control.space' },
-    { id: 'message', label: 'Message', type: 'textarea', placeholder: 'Tell us about your mission...' },
-  ]
+  let shuttleImg: HTMLImageElement
 
   let formData: Record<string, string> = {}
 
@@ -69,265 +22,540 @@
     !!formData['message']?.trim() &&
     formData['message']!.trim().length > 20
 
-  function handleInput(fieldId: string) {
-    if (rocketState === 'idle') {
-      rocketState = 'filling'
-      startSmoke()
-      initFlameCanvas()
+  // ═══ FX engine — one canvas for flames + smoke ═════════════════
+  //
+  // Everything is drawn on a single section-sized canvas in one rAF
+  // loop. SRB nozzle positions are measured from the shuttle <img>'s
+  // bounding rect every frame, so the effects stay glued to the
+  // boosters at any viewport scale, scroll offset, and during ascent.
+
+  let fxCanvas: HTMLCanvasElement
+  let fxCtx: CanvasRenderingContext2D | null = null
+  let fxRunning = false
+  let fxFrame = 0
+  let fxW = 0
+  let fxH = 0
+  let lastTick = 0
+  let flameTime = 0
+  let intensity = 0 // eased flame throttle: 0 idle → ~0.42 filling → 1 launch
+  // Flight time accumulated from clamped frame deltas (not wall clock),
+  // so a throttled/backgrounded tab can't teleport the rocket off-screen
+  let flyT = 0
+
+  // SRB nozzle centerlines as fractions of the shuttle image box,
+  // measured from the booster geometry in shuttle.svg
+  // (left SRB x 113–256, right SRB x 593–717, viewBox width 846.6)
+  const LEFT_SRB = 0.218
+  const RIGHT_SRB = 0.774
+  const NOZZLE_Y = 0.975
+
+  interface Puff {
+    x: number
+    y: number
+    vx: number // px/s
+    vy: number // px/s
+    size: number
+    growth: number // px/s
+    opacity: number
+    decay: number // opacity/s
+    dir: number // which way this puff deflects when it slams the pad
+    grounded: boolean
+    sprite: number
+  }
+
+  // Plain (non-reactive) array — puffs live on the canvas only
+  let puffs: Puff[] = []
+  const MAX_PUFFS = 2000
+  let emitCarry = 0
+  let trailCarry = 0
+
+  // Live nozzle geometry (follows the rocket) and pad geometry
+  // (frozen at liftoff so the ground cloud stays on the pad)
+  let noz = { leftX: 0, rightX: 0, y: 0, scale: 220 }
+  let pad = { leftX: 0, rightX: 0, y: 0, groundY: 0, scale: 220 }
+
+  // Pre-rendered soft puff sprites — drawImage of a cached sprite is
+  // far cheaper than a per-particle radial gradient
+  let sprites: HTMLCanvasElement[] = []
+
+  function makePuffSprite(warmth: number): HTMLCanvasElement {
+    const r = 64
+    const c = document.createElement('canvas')
+    c.width = c.height = r * 2
+    const g = c.getContext('2d')!
+    const grad = g.createRadialGradient(r * 0.92, r * 0.86, r * 0.1, r, r, r)
+    grad.addColorStop(0, `rgba(255, ${251 - warmth * 12}, ${244 - warmth * 28}, 0.92)`)
+    grad.addColorStop(0.4, `rgba(233, ${228 - warmth * 10}, ${226 - warmth * 22}, 0.55)`)
+    grad.addColorStop(0.75, 'rgba(196, 199, 208, 0.22)')
+    grad.addColorStop(1, 'rgba(176, 181, 192, 0)')
+    g.fillStyle = grad
+    g.fillRect(0, 0, r * 2, r * 2)
+    return c
+  }
+
+  function ensureSprites() {
+    if (sprites.length === 0) {
+      sprites = [makePuffSprite(0), makePuffSprite(0.5), makePuffSprite(1)]
     }
   }
 
-  let smokeInterval: ReturnType<typeof setInterval>
-  let particleId = 0
+  // ─── Ambient pad mist (always-on, behind the foreground art) ───
 
-  // ─── Full-screen Flame Canvas (two SRB flames) ─────────────────
+  let ambientCanvas: HTMLCanvasElement
+  let ambientCtx: CanvasRenderingContext2D | null = null
+  let ambientFrame = 0
+  let ambientLast = 0
+  let ambientRunning = false
 
-  function initFlameCanvas() {
-    if (flameCtx || !flameCanvas) return
-    flameCtx = flameCanvas.getContext('2d')!
-    resizeFlameCanvas()
-    drawFlames()
+  interface AmbPuff {
+    x: number
+    y: number
+    vx: number
+    size: number
+    age: number
+    life: number
+    peak: number
+    sprite: number
+  }
+  let ambPuffs: AmbPuff[] = []
+  const AMB_MAX = 44
+
+  function resizeAmbient() {
+    if (!ambientCanvas) return
+    const parent = ambientCanvas.parentElement!
+    ambientCanvas.width = parent.clientWidth
+    ambientCanvas.height = parent.clientHeight
   }
 
-  function resizeFlameCanvas() {
-    if (!flameCanvas) return
-    flameCanvas.width = window.innerWidth
-    flameCanvas.height = window.innerHeight
+  function spawnAmbient(w: number, h: number, midLife: boolean) {
+    const life = 8 + Math.random() * 8
+    ambPuffs.push({
+      x: Math.random() * w,
+      y: h - Math.random() * h * 0.4,
+      vx: (Math.random() - 0.5) * w * 0.014,
+      size: w * (0.07 + Math.random() * 0.12),
+      age: midLife ? Math.random() * life : 0,
+      life,
+      peak: 0.16 + Math.random() * 0.18,
+      sprite: (Math.random() * 3) | 0,
+    })
   }
 
-  /** Draw a single rocket flame at a given position */
-  function drawSingleFlame(
-    ctx: CanvasRenderingContext2D,
-    cx: number,
-    engineY: number,
-    intensity: number,
-    time: number,
-  ) {
-    const isLaunching = rocketState === 'launching'
-    const flameHeight = vw(12) * (0.7 + Math.sin(time * 3) * 0.12) * intensity
-    const baseWidth = vw(3.5) * (1 + Math.sin(time * 1.7) * 0.06)
-
-    // Multi-frequency noise for organic turbulence
-    const noise = (t: number) =>
-      Math.sin(t) * 0.5 + Math.sin(t * 2.3) * 0.3 + Math.sin(t * 5.7) * 0.15 + Math.sin(t * 11.3) * 0.08
-
-    // ── Outer flame (deep red/orange) ──
-    ctx.beginPath()
-    for (let i = 0; i <= 24; i++) {
-      const t = i / 24
-      const angle = t * Math.PI - Math.PI / 2
-      const xOff = Math.sin(angle) * baseWidth * 0.5
-      const turb = noise(time * 2.5 + t * 5) * baseWidth * 0.12
-      const x = cx + xOff + turb * (1 - t * 0.7)
-      const y = engineY + flameHeight * (0.1 + t * 0.9) + Math.sin(time * 2 + i * 2.5) * 2
-      if (i === 0) ctx.moveTo(x, y)
-      else ctx.lineTo(x, y)
-    }
-    ctx.closePath()
-    const og = ctx.createRadialGradient(cx, engineY + flameHeight * 0.3, 0, cx, engineY + flameHeight * 0.3, baseWidth)
-    og.addColorStop(0, 'rgba(255, 130, 20, 0.85)')
-    og.addColorStop(0.3, 'rgba(255, 70, 8, 0.7)')
-    og.addColorStop(0.6, 'rgba(200, 35, 5, 0.4)')
-    og.addColorStop(1, 'rgba(120, 10, 0, 0)')
-    ctx.fillStyle = og
-    ctx.globalAlpha = 0.75 * intensity
-    ctx.fill()
-
-    // ── Mid flame (yellow/orange) ──
-    ctx.beginPath()
-    for (let i = 0; i <= 20; i++) {
-      const t = i / 20
-      const angle = t * Math.PI - Math.PI / 2
-      const xOff = Math.sin(angle) * baseWidth * 0.4
-      const turb = noise(time * 3.5 + t * 6 + 1) * baseWidth * 0.08
-      const x = cx + xOff + turb * (1 - t * 0.6)
-      const y = engineY + flameHeight * (0.18 + t * 0.82) + Math.sin(time * 2.5 + i * 2) * 2
-      if (i === 0) ctx.moveTo(x, y)
-      else ctx.lineTo(x, y)
-    }
-    ctx.closePath()
-    const mg = ctx.createRadialGradient(cx, engineY + flameHeight * 0.25, 0, cx, engineY + flameHeight * 0.25, baseWidth * 0.5)
-    mg.addColorStop(0, 'rgba(255, 230, 50, 0.95)')
-    mg.addColorStop(0.4, 'rgba(255, 160, 25, 0.8)')
-    mg.addColorStop(0.7, 'rgba(255, 90, 12, 0.4)')
-    mg.addColorStop(1, 'rgba(255, 50, 5, 0)')
-    ctx.fillStyle = mg
-    ctx.globalAlpha = 0.85 * intensity
-    ctx.fill()
-
-    // ── Inner core (white-hot) ──
-    ctx.beginPath()
-    for (let i = 0; i <= 14; i++) {
-      const t = i / 14
-      const angle = t * Math.PI - Math.PI / 2
-      const xOff = Math.sin(angle) * baseWidth * 0.2
-      const turb = noise(time * 5 + t * 7 + 2) * baseWidth * 0.05
-      const x = cx + xOff + turb * (1 - t * 0.5)
-      const y = engineY + flameHeight * (0.3 + t * 0.7) + Math.sin(time * 3.5 + i * 3) * 1.5
-      if (i === 0) ctx.moveTo(x, y)
-      else ctx.lineTo(x, y)
-    }
-    ctx.closePath()
-    const ig = ctx.createRadialGradient(cx, engineY + flameHeight * 0.2, 0, cx, engineY + flameHeight * 0.2, baseWidth * 0.25)
-    ig.addColorStop(0, 'rgba(255, 255, 255, 1)')
-    ig.addColorStop(0.4, 'rgba(255, 255, 230, 0.9)')
-    ig.addColorStop(0.7, 'rgba(255, 230, 120, 0.5)')
-    ig.addColorStop(1, 'rgba(255, 200, 80, 0)')
-    ctx.fillStyle = ig
-    ctx.globalAlpha = 0.9 * intensity
-    ctx.fill()
-
-    // ── Engine glow ──
-    const glowR = baseWidth * 0.8
-    const gg = ctx.createRadialGradient(cx, engineY + 10, 0, cx, engineY + 10, glowR)
-    gg.addColorStop(0, `rgba(255, 200, 60, ${0.35 * intensity})`)
-    gg.addColorStop(0.3, `rgba(255, 120, 30, ${0.2 * intensity})`)
-    gg.addColorStop(0.6, `rgba(255, 60, 15, ${0.1 * intensity})`)
-    gg.addColorStop(1, 'rgba(255, 30, 5, 0)')
-    ctx.fillStyle = gg
-    ctx.globalAlpha = 0.5 * intensity
-    ctx.fillRect(cx - glowR, engineY + 5, glowR * 2, glowR * 1.2)
-
-    // ── Sparks during launch ──
-    if (isLaunching) {
-      for (let i = 0; i < 8; i++) {
-        const sparkT = (time * 4 + i * 1.3 + Math.random() * 0.5) % 1
-        const sx = cx + (Math.random() - 0.5) * baseWidth
-        const sy = engineY + sparkT * flameHeight * 0.8 + Math.sin(time * 6 + i) * 4
-        ctx.beginPath()
-        ctx.arc(sx, sy, 1 + Math.random() * 3, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(255, ${180 + Math.random() * 75}, ${30 + Math.random() * 80}, ${(1 - sparkT) * 0.9})`
-        ctx.fill()
-      }
-    }
-  }
-
-  /** Draw two SRB flames on the full-screen canvas */
-  function drawFlames() {
-    if (!flameCtx || !flameCanvas) return
-    const ctx = flameCtx
-    const w = flameCanvas.width
-    const h = flameCanvas.height
-
+  function ambientTick(now: number) {
+    if (!ambientRunning) return
+    const dt = Math.min((now - ambientLast) / 1000, 0.05)
+    ambientLast = now
+    const ctx = ambientCtx!
+    const w = ambientCanvas.width
+    const h = ambientCanvas.height
     ctx.clearRect(0, 0, w, h)
 
-    const intensity = rocketState === 'launching' ? 1 : rocketState === 'filling' ? 0.5 : 0.3
-    flameTime += 0.06
+    if (ambPuffs.length < AMB_MAX && Math.random() < dt * 6) spawnAmbient(w, h, false)
 
-    const { leftX, rightX, engineY } = getSrbPositions()
-
-    // Left SRB flame
-    drawSingleFlame(ctx, leftX, engineY, intensity, flameTime)
-    // Right SRB flame
-    drawSingleFlame(ctx, rightX, engineY, intensity, flameTime + 0.3)
-    // Slightly dim central SSME flame (between the SRBs)
-    if (intensity > 0.3) {
-      const centerX = (leftX + rightX) / 2
-      drawSingleFlame(ctx, centerX, engineY + 4, intensity * 0.4, flameTime + 0.15)
-    }
-
-    flameAnimFrame = requestAnimationFrame(drawFlames)
-  }
-
-  // ─── Smoke System ──────────────────────────────────────────────
-
-  function spawnSmokeAtEngine(side: 'left' | 'right', count: number, isLaunch: boolean) {
-    const { leftX, rightX, engineY } = getSrbPositions()
-    const cx = side === 'left' ? leftX : rightX
-    const groundY = window.innerHeight - 20
-
-    for (let i = 0; i < count; i++) {
-      const spreadDir = side === 'left' ? -1 : 1
-      const speed = isLaunch
-        ? 1.5 + Math.random() * 4
-        : 0.3 + Math.random() * 1.2
-      const downSpeed = isLaunch
-        ? 1.0 + Math.random() * 2.5
-        : 0.3 + Math.random() * 0.8
-
-      smokeParticles = [
-        ...smokeParticles,
-        {
-          id: particleId++,
-          x: cx + (Math.random() - 0.5) * vw(1.5),
-          y: engineY + (Math.random() - 0.5) * 10,
-          size: isLaunch
-            ? 12 + Math.random() * 40
-            : 6 + Math.random() * 18,
-          opacity: 0.4 + Math.random() * 0.4,
-          vx: spreadDir * speed + (Math.random() - 0.5) * 0.5,
-          vy: downSpeed + (Math.random() - 0.5) * 0.3,
-          rot: Math.random() * 360,
-          rotSpeed: (Math.random() - 0.5) * 2,
-          groundLevel: groundY - Math.random() * 40,
-        },
-      ]
-    }
-  }
-
-  function startSmoke() {
-    smokeInterval = setInterval(() => {
-      if (rocketState === 'launching' || rocketState === 'flying') return
-      spawnSmokeAtEngine('left', 2, false)
-      spawnSmokeAtEngine('right', 2, false)
-      if (smokeParticles.length > 200) {
-        smokeParticles = smokeParticles.slice(-200)
+    for (let i = ambPuffs.length - 1; i >= 0; i--) {
+      const p = ambPuffs[i]
+      p.age += dt
+      if (p.age >= p.life) {
+        ambPuffs[i] = ambPuffs[ambPuffs.length - 1]
+        ambPuffs.pop()
+        continue
       }
-    }, 100)
+      p.x += p.vx * dt
+      p.y -= p.size * 0.01 * dt
+      // fade in, drift, fade out
+      ctx.globalAlpha = p.peak * Math.sin(Math.PI * (p.age / p.life))
+      const half = p.size / 2
+      ctx.drawImage(sprites[p.sprite], p.x - half, p.y - half, p.size, p.size)
+    }
+    ctx.globalAlpha = 1
+    ambientFrame = requestAnimationFrame(ambientTick)
   }
 
-  function animateSmoke() {
-    const centerX = window.innerWidth * (SHUTTLE_CENTER_VW / 100)
+  function startAmbient() {
+    if (ambientRunning || !ambientCanvas) return
+    ensureSprites()
+    ambientCtx = ambientCanvas.getContext('2d')!
+    resizeAmbient()
+    // pre-seed mid-life puffs so the pad isn't bare on first paint
+    for (let i = 0; i < AMB_MAX * 0.6; i++) {
+      spawnAmbient(ambientCanvas.width, ambientCanvas.height, true)
+    }
+    ambientRunning = true
+    ambientLast = performance.now()
+    ambientFrame = requestAnimationFrame(ambientTick)
+  }
 
-    smokeParticles = smokeParticles
-      .map((p) => {
-        const newSize = p.size + 0.15 + Math.random() * 0.1
-        const newOpacity = p.opacity - 0.002 - Math.random() * 0.0015
+  function resizeFx() {
+    resizeAmbient()
+    if (!fxCanvas || !contactSection) return
+    fxW = contactSection.clientWidth
+    fxH = contactSection.clientHeight
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
+    fxCanvas.width = fxW * dpr
+    fxCanvas.height = fxH * dpr
+    fxCanvas.style.width = fxW + 'px'
+    fxCanvas.style.height = fxH + 'px'
+    fxCtx?.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
 
-        let newVy = p.vy + 0.015
-        let newVx = p.vx
+  function startFx() {
+    if (fxRunning) return
+    if (!fxCtx) {
+      fxCtx = fxCanvas.getContext('2d')!
+      ensureSprites()
+    }
+    resizeFx()
+    fxRunning = true
+    lastTick = performance.now()
+    fxFrame = requestAnimationFrame(tick)
+  }
 
-        // Ground effect: once near ground, spread outward
-        if (p.y >= p.groundLevel) {
-          newVy *= 0.92
-          const dir = p.x > centerX ? 1 : -1
-          newVx += dir * (0.03 + Math.random() * 0.02)
-          newVx *= 1.002
-        } else {
-          newVx *= 0.995
-        }
+  /** Measure nozzle positions from the live shuttle rect (section-local px) */
+  function measure(): boolean {
+    if (!contactSection || !shuttleImg) return false
+    const sec = contactSection.getBoundingClientRect()
+    const r = shuttleImg.getBoundingClientRect()
+    if (r.width < 4) return false // shuttle hidden (mobile)
+    const left = r.left - sec.left
+    const top = r.top - sec.top
+    noz = {
+      leftX: left + r.width * LEFT_SRB,
+      rightX: left + r.width * RIGHT_SRB,
+      y: top + r.height * NOZZLE_Y,
+      scale: r.width,
+    }
+    if (rocketState !== 'flying') {
+      pad = { ...noz, groundY: noz.y + r.width * 0.12 }
+    }
+    return true
+  }
 
-        newVy = Math.min(newVy, 4)
+  // ─── Smoke ─────────────────────────────────────────────────────
 
-        return {
-          ...p,
-          x: p.x + newVx + Math.sin(p.y * 0.01) * 0.2,
-          y: p.y + newVy,
-          size: newSize,
-          opacity: newOpacity,
-          vx: newVx,
-          vy: newVy,
-          rot: p.rot + p.rotSpeed,
-        }
+  function pickSource(): { x: number; dir: number } {
+    return Math.random() < 0.5
+      ? { x: pad.leftX, dir: -1 }
+      : { x: pad.rightX, dir: 1 }
+  }
+
+  /** Exhaust jet fired down from a nozzle — slams the pad, then spreads */
+  function spawnJet(big: boolean) {
+    const { x, dir } = pickSource()
+    const s = pad.scale
+    if (big) {
+      puffs.push({
+        x: x + (Math.random() - 0.5) * s * 0.08,
+        y: pad.y + Math.random() * s * 0.03,
+        vx: (Math.random() - 0.5) * s * 0.25,
+        vy: s * (1.6 + Math.random() * 1.6),
+        size: s * (0.08 + Math.random() * 0.1),
+        growth: s * (0.08 + Math.random() * 0.08),
+        opacity: 0.5 + Math.random() * 0.35,
+        decay: 0.065 + Math.random() * 0.035,
+        dir,
+        grounded: false,
+        sprite: (Math.random() * 3) | 0,
       })
-      .filter((p) =>
-        p.opacity > 0.005 &&
-        p.y < window.innerHeight + 100 &&
-        p.x > -200 &&
-        p.x < window.innerWidth + 200
-      )
+    } else {
+      // pre-launch wisps: jetting down hard enough to spread on the pad
+      puffs.push({
+        x: x + (Math.random() - 0.5) * s * 0.06,
+        y: pad.y + Math.random() * s * 0.04,
+        vx: (Math.random() - 0.5) * s * 0.22,
+        vy: s * (0.3 + Math.random() * 0.4),
+        size: s * (0.04 + Math.random() * 0.07),
+        growth: s * (0.03 + Math.random() * 0.03),
+        opacity: 0.22 + Math.random() * 0.18,
+        decay: 0.05 + Math.random() * 0.03,
+        dir,
+        grounded: false,
+        sprite: (Math.random() * 3) | 0,
+      })
+    }
   }
 
-  // ─── Launch Sequence ───────────────────────────────────────────
+  /** Ground-cloud puff erupting sideways from the pad (used post-liftoff) */
+  function spawnGround() {
+    const { x, dir } = pickSource()
+    const s = pad.scale
+    puffs.push({
+      x: x + dir * Math.random() * s * 0.3,
+      y: pad.groundY - Math.random() * s * 0.06,
+      vx: dir * s * (0.5 + Math.random() * 1.7),
+      vy: -s * (0.04 + Math.random() * 0.2),
+      size: s * (0.12 + Math.random() * 0.16),
+      growth: s * (0.1 + Math.random() * 0.12),
+      opacity: 0.45 + Math.random() * 0.3,
+      decay: 0.06 + Math.random() * 0.04,
+      dir,
+      grounded: true,
+      sprite: (Math.random() * 3) | 0,
+    })
+  }
+
+  /** Instant wall of smoke at ignition (T-0) */
+  function igniteBurst() {
+    measure() // pad geometry may not be set yet (e.g. launch without typing)
+    for (let i = 0; i < 240; i++) spawnJet(true)
+    for (let i = 0; i < 180; i++) spawnGround()
+  }
+
+  function emit(dt: number) {
+    let rate = 0
+    if (rocketState === 'filling') rate = 48
+    else if (rocketState === 'launching') rate = 240
+    else if (rocketState === 'flying') {
+      // pad cloud keeps churning long after liftoff
+      rate = 240 * Math.max(0, 1 - flyT / 7)
+    }
+    emitCarry += rate * dt
+    while (emitCarry >= 1) {
+      emitCarry -= 1
+      if (rocketState === 'flying') Math.random() < 0.55 ? spawnGround() : spawnJet(true)
+      else spawnJet(rocketState === 'launching')
+    }
+
+    // exhaust trail from the climbing rocket
+    if (rocketState === 'flying' && noz.y > -noz.scale) {
+      trailCarry += 210 * dt
+      while (trailCarry >= 1) {
+        trailCarry -= 1
+        const x = Math.random() < 0.5 ? noz.leftX : noz.rightX
+        const s = noz.scale
+        puffs.push({
+          x: x + (Math.random() - 0.5) * s * 0.06,
+          y: noz.y + Math.random() * s * 0.05,
+          vx: (Math.random() - 0.5) * s * 0.15,
+          vy: s * (0.4 + Math.random() * 0.7),
+          size: s * (0.06 + Math.random() * 0.08),
+          growth: s * (0.12 + Math.random() * 0.1),
+          opacity: 0.45 + Math.random() * 0.3,
+          decay: 0.13 + Math.random() * 0.07,
+          dir: Math.random() < 0.5 ? -1 : 1,
+          grounded: false,
+          sprite: (Math.random() * 3) | 0,
+        })
+      }
+    }
+
+    if (puffs.length > MAX_PUFFS) puffs.splice(0, puffs.length - MAX_PUFFS)
+  }
+
+  function updatePuffs(dt: number) {
+    const s = pad.scale
+    const drag = Math.pow(0.5, dt) // grounded vx halves each second
+    for (let i = puffs.length - 1; i >= 0; i--) {
+      const p = puffs[i]
+      if (!p.grounded) {
+        p.vy += s * 0.5 * dt
+        if (p.y >= pad.groundY && p.vy > 0) {
+          // pad slam: vertical momentum deflects outward along the ground
+          p.grounded = true
+          const kick = Math.abs(p.vy)
+          p.vx = p.dir * (kick * (0.7 + Math.random() * 0.7) + s * 0.2)
+          p.vy = -kick * (0.05 + Math.random() * 0.1)
+        }
+      } else {
+        p.vx *= drag
+        p.vy -= s * 0.28 * dt // buoyancy: cloud slowly billows upward
+        if (p.vy < -s * 0.22) p.vy = -s * 0.22
+      }
+      p.x += p.vx * dt
+      p.y += p.vy * dt
+      p.size += p.growth * dt * (p.grounded ? 1.5 : 1)
+      p.opacity -= p.decay * dt
+      if (p.opacity <= 0.012 || p.x < -p.size - fxW * 0.2 || p.x > fxW + p.size + fxW * 0.2) {
+        puffs[i] = puffs[puffs.length - 1]
+        puffs.pop()
+      }
+    }
+  }
+
+  function drawPuffs(ctx: CanvasRenderingContext2D) {
+    for (let i = 0; i < puffs.length; i++) {
+      const p = puffs[i]
+      ctx.globalAlpha = Math.min(p.opacity, 1)
+      const half = p.size / 2
+      ctx.drawImage(sprites[p.sprite], p.x - half, p.y - half, p.size, p.size)
+    }
+    ctx.globalAlpha = 1
+  }
+
+  // ─── Flames ────────────────────────────────────────────────────
+
+  function flamePath(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    len: number,
+    w: number,
+    t: number,
+    seed: number,
+  ) {
+    // Tube profile: near-constant width down the column, tapering at the tip
+    const N = 14
+    const tube = (f: number) => 0.5 * (1 - Math.pow(f, 3.2) * 0.9)
+    ctx.beginPath()
+    ctx.moveTo(x - w * 0.5, y)
+    for (let i = 1; i <= N; i++) {
+      const f = i / N
+      const hw = w * tube(f) * (1 + Math.sin(t * 30 + seed + f * 14) * 0.1)
+      const wob = Math.sin(t * 21 + seed + f * 9) * w * 0.1 * f
+      ctx.lineTo(x - hw + wob, y + len * f)
+    }
+    for (let i = N - 1; i >= 1; i--) {
+      const f = i / N
+      const hw = w * tube(f) * (1 + Math.sin(t * 27 + seed * 1.7 + f * 11) * 0.1)
+      const wob = Math.sin(t * 23 + seed * 2.3 + f * 8) * w * 0.1 * f
+      ctx.lineTo(x + hw + wob, y + len * f)
+    }
+    ctx.closePath()
+  }
+
+  function drawFlame(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    power: number,
+    seed: number,
+  ) {
+    const s = noz.scale
+    const flick = 0.86 + 0.14 * Math.sin(flameTime * 31 + seed * 7) * Math.sin(flameTime * 12.3 + seed)
+    const len = s * (0.14 + 0.62 * power) * flick
+    // width grows superlinearly with throttle: slim idle jets,
+    // full-thrust columns a touch narrower than the boosters
+    const w = s * (0.05 + 0.13 * power * power)
+
+    // outer plume
+    flamePath(ctx, x, y - len * 0.02, len, w * 1.35, flameTime, seed)
+    let g = ctx.createLinearGradient(x, y, x, y + len)
+    g.addColorStop(0, `rgba(255, 150, 40, ${0.85 * power})`)
+    g.addColorStop(0.45, `rgba(255, 84, 14, ${0.6 * power})`)
+    g.addColorStop(1, 'rgba(180, 30, 4, 0)')
+    ctx.fillStyle = g
+    ctx.fill()
+
+    // hot core
+    flamePath(ctx, x, y, len * 0.62, w * 0.62, flameTime * 1.4, seed + 11)
+    g = ctx.createLinearGradient(x, y, x, y + len * 0.62)
+    g.addColorStop(0, `rgba(255, 255, 250, ${0.95 * power})`)
+    g.addColorStop(0.5, `rgba(255, 226, 120, ${0.8 * power})`)
+    g.addColorStop(1, 'rgba(255, 160, 40, 0)')
+    ctx.fillStyle = g
+    ctx.fill()
+  }
+
+  function drawFlamesAll(ctx: CanvasRenderingContext2D) {
+    ctx.globalCompositeOperation = 'lighter'
+
+    // warm light spilling over the pad
+    const glowFlick = 0.8 + 0.2 * Math.sin(flameTime * 17.7)
+    const glowA = 0.16 * intensity * glowFlick
+    if (glowA > 0.01) {
+      const gx = (pad.leftX + pad.rightX) / 2
+      const gr = pad.scale * 1.9
+      const gg = ctx.createRadialGradient(gx, pad.groundY, 0, gx, pad.groundY, gr)
+      gg.addColorStop(0, `rgba(255, 176, 80, ${glowA})`)
+      gg.addColorStop(0.5, `rgba(255, 120, 44, ${glowA * 0.45})`)
+      gg.addColorStop(1, 'rgba(255, 90, 30, 0)')
+      ctx.fillStyle = gg
+      ctx.fillRect(gx - gr, pad.groundY - gr, gr * 2, gr * 2)
+    }
+
+    drawFlame(ctx, noz.leftX, noz.y, intensity, 1)
+    drawFlame(ctx, noz.rightX, noz.y, intensity, 5)
+
+    ctx.globalCompositeOperation = 'source-over'
+  }
+
+  // ─── Main loop ─────────────────────────────────────────────────
+
+  function tick(now: number) {
+    if (!fxRunning) return
+    const dt = Math.min((now - lastTick) / 1000, 0.05)
+    lastTick = now
+    flameTime += dt
+
+    const visible = measure()
+    const ctx = fxCtx!
+    ctx.clearRect(0, 0, fxW, fxH)
+
+    // throttle eases up on ignition, snaps harder on launch
+    const target =
+      rocketState === 'launching' || rocketState === 'flying' ? 1
+      : rocketState === 'filling' ? 0.42
+      : 0
+    intensity += (target - intensity) * Math.min(1, dt * (target > intensity ? 2.4 : 4))
+
+    // ascent: slow crawl off the pad, accelerating like the real thing
+    if (rocketState === 'flying') {
+      flyT += dt
+      rocketY = window.innerHeight * (0.0012 * flyT * flyT * flyT + 0.005 * flyT * flyT)
+    }
+
+    // hold-down rumble, fading out as the stack climbs
+    const rumbleAmp =
+      rocketState === 'launching' ? 1
+      : rocketState === 'flying' ? Math.max(0, 1 - flyT / 4)
+      : rocketState === 'filling' ? 0.12
+      : 0
+    rumbleX = (Math.random() - 0.5) * pad.scale * 0.014 * rumbleAmp
+    rumbleY = (Math.random() - 0.5) * pad.scale * 0.009 * rumbleAmp
+
+    if (visible) {
+      emit(dt)
+      updatePuffs(dt)
+      if (intensity > 0.02) drawFlamesAll(ctx)
+      drawPuffs(ctx)
+    }
+
+    // wind down once the rocket is long gone and the cloud has faded
+    if (rocketState === 'flying' && rocketY > window.innerHeight * 2.5 && puffs.length === 0) {
+      fxRunning = false
+      rumbleX = 0
+      rumbleY = 0
+      return
+    }
+    fxFrame = requestAnimationFrame(tick)
+  }
+
+  // ─── Form / launch sequence ────────────────────────────────────
+
+  function handleInput() {
+    if (rocketState === 'idle') {
+      rocketState = 'filling'
+      startFx()
+    }
+  }
+
+  /** Skip the paperwork — light the engines and go */
+  function justLaunch() {
+    if (rocketState === 'launching' || rocketState === 'flying') return
+    rocketState = 'launching'
+    startFx()
+    igniteBurst()
+    setTimeout(() => {
+      flyT = 0
+      rocketState = 'flying'
+    }, 1400)
+  }
 
   async function handleSubmit(e: Event) {
     e.preventDefault()
     if (formSubmitting) return
     formSubmitting = true
-    rocketState = 'launching'
-    clearInterval(smokeInterval)
 
-    // Submit to web3forms.com
+    // If the rocket already left (via the launch-only button), just
+    // submit quietly — don't teleport it back to the pad
+    const alreadyFlown = rocketState === 'flying'
+
+    // Throttle up: full flames + billowing smoke while the form sends
+    if (!alreadyFlown) {
+      rocketState = 'launching'
+      startFx()
+      igniteBurst()
+    }
+
     const form = e.target as HTMLFormElement
     const fd = new FormData(form)
     try {
@@ -342,81 +570,18 @@
     } catch (err) {
       console.error('Form submission error:', err)
       formSubmitting = false
-      rocketState = 'idle'
+      if (!alreadyFlown) rocketState = 'filling' // throttle back down, engines stay lit
       return
     }
 
-    // Massive launch smoke burst — billows down and spreads wide
-    spawnSmokeAtEngine('left', 80, true)
-    spawnSmokeAtEngine('right', 80, true)
-
-    // Extra ground-level smoke that spreads wide
-    const { leftX, rightX, engineY } = getSrbPositions()
-    const groundY = window.innerHeight - 20
-    for (let i = 0; i < 40; i++) {
-      const side = i < 20 ? -1 : 1
-      smokeParticles = [
-        ...smokeParticles,
-        {
-          id: particleId++,
-          x: (i < 20 ? leftX : rightX) + (Math.random() - 0.5) * 30,
-          y: engineY + 20 + Math.random() * 20,
-          size: 20 + Math.random() * 50,
-          opacity: 0.5 + Math.random() * 0.4,
-          vx: side * (1.5 + Math.random() * 4),
-          vy: 1.0 + Math.random() * 2,
-          rot: Math.random() * 360,
-          rotSpeed: (Math.random() - 0.5) * 2.5,
-          groundLevel: groundY - 30 + Math.random() * 30,
-        },
-      ]
-    }
-
-    // Launch sequence
-    let startTime = Date.now()
-    const launchDuration = 3000
-
-    // Continuous smoke during launch
-    const launchSmokeInterval = setInterval(() => {
-      if (rocketState === 'flying') {
-        clearInterval(launchSmokeInterval)
-        return
-      }
-      spawnSmokeAtEngine('left', 3, true)
-      spawnSmokeAtEngine('right', 3, true)
-    }, 80)
-
-    function animateLaunch() {
-      const elapsed = Date.now() - startTime
-      launchProgress = Math.min(elapsed / launchDuration, 1)
-
-      const eased = 1 - Math.pow(1 - launchProgress, 3)
-      rocketY = eased * window.innerHeight * 1.2
-
-      animateSmoke()
-
-      if (launchProgress >= 1) {
+    formSuccess = true
+    // brief hold-down at full thrust, then release
+    if (!alreadyFlown) {
+      setTimeout(() => {
+        flyT = 0
         rocketState = 'flying'
-        formSuccess = true
-        clearInterval(launchSmokeInterval)
-        const flyUp = () => {
-          rocketY += 4
-          animateSmoke()
-          if (rocketY < window.innerHeight * 2) {
-            animFrame = requestAnimationFrame(flyUp)
-          }
-        }
-        animFrame = requestAnimationFrame(flyUp)
-        return
-      }
-
-      animFrame = requestAnimationFrame(animateLaunch)
+      }, 700)
     }
-    animFrame = requestAnimationFrame(animateLaunch)
-  }
-
-  function handleResize() {
-    resizeFlameCanvas()
   }
 
   onMount(() => {
@@ -426,13 +591,15 @@
       scrollY = -rect.top
     }
     window.addEventListener('scroll', onScroll)
-    window.addEventListener('resize', handleResize)
+    window.addEventListener('resize', resizeFx)
+    startAmbient()
     return () => {
       window.removeEventListener('scroll', onScroll)
-      window.removeEventListener('resize', handleResize)
-      clearInterval(smokeInterval)
-      cancelAnimationFrame(animFrame)
-      cancelAnimationFrame(flameAnimFrame)
+      window.removeEventListener('resize', resizeFx)
+      fxRunning = false
+      ambientRunning = false
+      cancelAnimationFrame(fxFrame)
+      cancelAnimationFrame(ambientFrame)
     }
   })
 </script>
@@ -490,32 +657,28 @@
       </svg>
     </div>
 
+    <!-- Ambient idle smoke drifting across the pad, behind the foreground -->
+    <canvas bind:this={ambientCanvas} class="ambient-canvas" aria-hidden="true"></canvas>
+
     <img src={launchpadFgUrl} class="launchpad-foreground" alt="" aria-hidden="true" />
   </div>
 
-  <!-- Full-screen flame & smoke overlay (behind launchpad foreground) -->
+  <!-- Flame & smoke overlay (single canvas, scrolls with the section) -->
   <div class="flame-overlay" aria-hidden="true">
     <canvas
-      bind:this={flameCanvas}
+      bind:this={fxCanvas}
       class="flame-overlay-canvas"
       aria-hidden="true"
     ></canvas>
-
-    {#each smokeParticles as particle (particle.id)}
-      <div
-        class="smoke-particle smoke-particle--overlay"
-        style="left: {particle.x}px; top: {particle.y}px; width: {particle.size}px; height: {particle.size}px; opacity: {particle.opacity}; transform: rotate({particle.rot}deg)"
-      ></div>
-    {/each}
   </div>
 
   <!-- Shuttle — positioned independently to align with the launchpad -->
   <div
     class="shuttle-container"
-    style="transform: translateY({-rocketY}px)"
+    style="transform: translate3d({rumbleX}px, {rumbleY - rocketY}px, 0)"
   >
     <div class="rocket-wrapper">
-      <img src={shuttleUrl} class="shuttle" alt="Space Shuttle" />
+      <img bind:this={shuttleImg} src={shuttleUrl} class="shuttle" alt="Space Shuttle" />
     </div>
   </div>
 
@@ -549,7 +712,7 @@
                 name="name"
                 placeholder="Cosmonaut..."
                 bind:value={formData['name']}
-                oninput={() => handleInput('name')}
+                oninput={() => handleInput()}
                 required
               />
             </div>
@@ -562,7 +725,7 @@
                 name="email"
                 placeholder="mission@control.space"
                 bind:value={formData['email']}
-                oninput={() => handleInput('email')}
+                oninput={() => handleInput()}
                 required
               />
             </div>
@@ -574,7 +737,7 @@
                 name="message"
                 placeholder="Tell us about your mission..."
                 bind:value={formData['message']}
-                oninput={() => handleInput('message')}
+                oninput={() => handleInput()}
                 rows={4}
                 required
               ></textarea>
@@ -586,6 +749,15 @@
               disabled={!formValid || formSubmitting}
             >
               {formSubmitting ? 'Sending...' : 'Send Message'}
+            </button>
+
+            <button
+              type="button"
+              class="just-launch-btn"
+              onclick={justLaunch}
+              disabled={rocketState === 'launching' || rocketState === 'flying'}
+            >
+              I just want to launch the Rocket 🚀
             </button>
           </form>
         {/if}
@@ -617,7 +789,7 @@
                 name="name"
                 placeholder="Cosmonaut..."
                 bind:value={formData['name']}
-                oninput={() => handleInput('name')}
+                oninput={() => handleInput()}
                 required
               />
             </div>
@@ -629,7 +801,7 @@
                 name="email"
                 placeholder="mission@control.space"
                 bind:value={formData['email']}
-                oninput={() => handleInput('email')}
+                oninput={() => handleInput()}
                 required
               />
             </div>
@@ -640,7 +812,7 @@
                 name="message"
                 placeholder="Tell us about your mission..."
                 bind:value={formData['message']}
-                oninput={() => handleInput('message')}
+                oninput={() => handleInput()}
                 rows={3}
                 required
               ></textarea>
@@ -734,21 +906,18 @@
     filter: brightness(0.55);
   }
 
-  /* ── Full-screen flame & smoke overlay (behind foreground) ── */
+  /* ── Flame & smoke overlay (section-local, above the pad art) ── */
   .flame-overlay {
-    position: fixed;
+    position: absolute;
     inset: 0;
-    width: 100vw;
-    height: 100vh;
     z-index: 2;
     pointer-events: none;
     overflow: hidden;
   }
   .flame-overlay-canvas {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+    top: 0;
+    left: 0;
     display: block;
   }
 
@@ -799,6 +968,16 @@
     50% { transform: translateX(6px) scaleX(1.01); }
   }
 
+  .ambient-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    filter: blur(10px);
+  }
+
   .scenery {
     position: absolute;
     bottom: 0;
@@ -829,7 +1008,6 @@
     bottom: 0;
     z-index: 5;
     pointer-events: none;
-    transition: transform 0.05s linear;
     will-change: transform;
   }
 
@@ -857,25 +1035,6 @@
     filter: drop-shadow(2px 4px 12px rgba(0,0,0,0.3));
     position: relative;
     z-index: 3;
-  }
-
-  .smoke-particle--overlay {
-    position: fixed;
-    border-radius: 50%;
-    pointer-events: none;
-    z-index: 2;
-    background: radial-gradient(
-      circle at 40% 40%,
-      rgba(250, 248, 245, 0.85),
-      rgba(220, 225, 230, 0.45) 30%,
-      rgba(180, 190, 200, 0.2) 55%,
-      rgba(140, 155, 170, 0.06) 80%
-    );
-    box-shadow:
-      0 0 40px rgba(255, 255, 255, 0.06),
-      inset 0 -6px 16px rgba(160, 175, 190, 0.12);
-    will-change: transform, opacity;
-    mix-blend-mode: screen;
   }
 
   /* Form side */
@@ -984,6 +1143,29 @@
   }
   .launch-btn:disabled {
     opacity: 0.65;
+    cursor: not-allowed;
+  }
+
+  .just-launch-btn {
+    align-self: center;
+    padding: 0.4rem 0.75rem;
+    border: none;
+    background: none;
+    color: rgba(26, 26, 46, 0.55);
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: underline dotted rgba(26, 26, 46, 0.35);
+    text-underline-offset: 3px;
+    cursor: pointer;
+    transition: color 0.2s ease;
+    box-shadow: none;
+  }
+  .just-launch-btn:hover:not(:disabled) {
+    color: #7c5cfc;
+    box-shadow: none;
+  }
+  .just-launch-btn:disabled {
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
