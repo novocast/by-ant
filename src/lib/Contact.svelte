@@ -131,12 +131,14 @@
     const life = 8 + Math.random() * 8
     ambPuffs.push({
       x: Math.random() * w,
-      y: h - Math.random() * h * 0.4,
+      // hover around the horizon line — lower areas hide behind the
+      // opaque foreground pad art
+      y: h * (0.15 + Math.random() * 0.4),
       vx: (Math.random() - 0.5) * w * 0.014,
-      size: w * (0.07 + Math.random() * 0.12),
+      size: w * (0.09 + Math.random() * 0.14),
       age: midLife ? Math.random() * life : 0,
       life,
-      peak: 0.16 + Math.random() * 0.18,
+      peak: 0.3 + Math.random() * 0.25,
       sprite: (Math.random() * 3) | 0,
     })
   }
@@ -1065,18 +1067,18 @@
   .form-title {
     font-size: clamp(1.8rem, 3vw, 2.5rem);
     font-weight: 800;
-    color: #1a1a2e;
+    color: #ffffff;
     margin-bottom: 0.5rem;
   }
   .highlight {
-    background: linear-gradient(135deg, #7c5cfc, #6366f1);
+    background: linear-gradient(135deg, #e8756a, #e2716d);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
   .form-subtitle {
-    color: rgba(26,26,46,0.6);
+    color: rgba(255,255,255,0.65);
     margin-bottom: 2rem;
     font-size: 0.95rem;
   }
@@ -1095,29 +1097,30 @@
   .field label {
     font-size: 0.85rem;
     font-weight: 600;
-    color: #1a1a2e;
+    color: #ffffff;
   }
   .field input,
   .field textarea {
     padding: 0.8rem 1rem;
     border-radius: 12px;
-    border: 2px solid rgba(26,26,46,0.1);
-    background: rgba(255,255,255,0.6);
+    border: 1.5px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.08);
+    backdrop-filter: blur(8px);
     font-size: 0.95rem;
     font-family: var(--font-sans);
-    color: #1a1a2e;
+    color: #ffffff;
     transition: border-color 0.2s, box-shadow 0.2s;
     outline: none;
   }
   .field input:focus,
   .field textarea:focus {
-    border-color: #7c5cfc;
-    box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.15);
-    background: rgba(255,255,255,0.9);
+    border-color: #e8756a;
+    box-shadow: 0 0 0 3px rgba(232, 117, 106, 0.2);
+    background: rgba(255,255,255,0.12);
   }
   .field input::placeholder,
   .field textarea::placeholder {
-    color: rgba(26,26,46,0.3);
+    color: rgba(255,255,255,0.35);
   }
 
   .launch-btn {
@@ -1127,19 +1130,19 @@
     padding: 0.95rem 1.75rem;
     border-radius: 0;
     border: none;
-    background: #1a1040;
+    background: #e8756a;
     color: #ffffff;
     font-size: 1rem;
     font-weight: 700;
     text-transform: uppercase;
     cursor: pointer;
     transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
-    box-shadow: 4px 6px 0 rgb(234 179 8), 0 12px 18px rgba(0, 0, 0, 0.12);
+    box-shadow: 4px 6px 0 rgb(180 70 60), 0 12px 18px rgba(0, 0, 0, 0.12);
     margin-top: 0.5rem;
   }
   .launch-btn:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 4px 8px 0 rgb(234 179 8), 0 14px 20px rgba(0, 0, 0, 0.14);
+    box-shadow: 4px 8px 0 rgb(180 70 60), 0 14px 20px rgba(0, 0, 0, 0.14);
   }
   .launch-btn:disabled {
     opacity: 0.65;
@@ -1151,17 +1154,17 @@
     padding: 0.4rem 0.75rem;
     border: none;
     background: none;
-    color: rgba(26, 26, 46, 0.55);
+    color: rgba(255, 255, 255, 0.55);
     font-size: 0.85rem;
     font-weight: 600;
-    text-decoration: underline dotted rgba(26, 26, 46, 0.35);
+    text-decoration: underline dotted rgba(255, 255, 255, 0.35);
     text-underline-offset: 3px;
     cursor: pointer;
     transition: color 0.2s ease;
     box-shadow: none;
   }
   .just-launch-btn:hover:not(:disabled) {
-    color: #7c5cfc;
+    color: #e8756a;
     box-shadow: none;
   }
   .just-launch-btn:disabled {
@@ -1180,11 +1183,11 @@
   }
   .success-message h3 {
     font-size: 1.5rem;
-    color: #1a1a2e;
+    color: #ffffff;
     margin-bottom: 0.5rem;
   }
   .success-message p {
-    color: rgba(26,26,46,0.6);
+    color: rgba(255,255,255,0.6);
     font-size: 0.95rem;
   }
 
@@ -1238,9 +1241,9 @@
   }
   .field-mob input:focus,
   .field-mob textarea:focus {
-    border-color: #f59e0b;
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
-    background: rgba(255, 255, 255, 0.1);
+    border-color: #e8756a;
+    box-shadow: 0 0 0 3px rgba(232, 117, 106, 0.2);
+    background: rgba(255, 255, 255, 0.12);
   }
   .field-mob input::placeholder,
   .field-mob textarea::placeholder {
@@ -1252,8 +1255,8 @@
     padding: 0.8rem 1.25rem;
     border-radius: 10px;
     border: none;
-    background: linear-gradient(135deg, #f59e0b, #f97316);
-    color: #0a0a1e;
+    background: linear-gradient(135deg, #e8756a, #e2716d);
+    color: #ffffff;
     font-size: 0.95rem;
     font-weight: 700;
     cursor: pointer;
@@ -1262,7 +1265,7 @@
   }
   .send-btn-mob:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(245, 158, 11, 0.3);
+    box-shadow: 0 6px 16px rgba(232, 117, 106, 0.3);
   }
   .send-btn-mob:disabled {
     opacity: 0.6;

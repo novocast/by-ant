@@ -187,12 +187,14 @@
   }
 
   .tagline {
-    font-size: clamp(2.5rem, 6vw, 5rem);
+    font-size: clamp(3rem, 7vw, 6.5rem);
     font-weight: 800;
-    line-height: 1.1;
+    line-height: 1.2;
     color: white;
+    padding-top: 1rem;
     margin-bottom: 6.2rem;
     letter-spacing: -0.02em;
+    text-shadow: 0 2px 30px rgba(255, 255, 255, 0.07);
   }
 
   .gradient-text {
