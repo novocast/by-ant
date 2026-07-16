@@ -1,4 +1,4 @@
-# 🚀 Ant — Space Portfolio
+# 🚀 Ant — Custom Engineered Software Solutions
 
 An interactive, space-themed portfolio website built with **Svelte 5**, **TypeScript**, and **Vite**. It features a dynamic starfield, a parallax moon, orbital project cards, and a fully animated rocket launch contact form.
 
