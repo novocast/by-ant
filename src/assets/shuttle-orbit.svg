@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 200">
+  <defs>
+    <style>
+      .o-body { fill: #feeedc; }
+      .o-body-shade { fill: #e6d3c7; }
+      .o-wing { fill: #d8c5b8; }
+      .o-wing-shade { fill: #c0aaa5; }
+      .o-navy { fill: #27304d; }
+      .o-grey { fill: #8d7272; }
+      .o-white { fill: #fff; }
+      .o-dark { fill: #4f2a2a; }
+      .o-bell { fill: #b0b5c0; }
+    </style>
+  </defs>
+
+  <!-- Delta wing (top surface seen from behind-above), 3/4 skew to the right -->
+  <path class="o-wing" d="M15 170 L80 108 L145 160 L108 168 L52 168 Z"/>
+  <!-- wing underside sliver / trailing-edge shade -->
+  <path class="o-wing-shade" d="M15 170 L52 168 L108 168 L145 160 L138 166 L26 176 Z"/>
+  <!-- navy leading-edge accents -->
+  <path class="o-navy" d="M80 108 L15 170 L22 170 L80 114 Z"/>
+  <path class="o-navy" d="M80 108 L145 160 L139 161 L80 114 Z"/>
+
+  <!-- Vertical tail fin, offset right of centreline -->
+  <path class="o-navy" d="M77 114 L92 109 L87 52 L82 52 Z"/>
+  <path class="o-body-shade" d="M77 114 L82 112 L82 52 L80 52 Z"/>
+
+  <!-- Foreshortened fuselage, narrow nose (far) widening to rear (near) -->
+  <path class="o-body" d="M67 44 Q80 40 80 44 L80 44 L104 150 Q80 160 56 150 Z"/>
+  <!-- shaded right flank for the 3/4 read -->
+  <path class="o-body-shade" d="M80 44 L104 150 Q92 156 80 156 Z"/>
+  <!-- top highlight -->
+  <path class="o-white" d="M67 44 Q74 41 80 44 L74 60 L69 58 Z"/>
+
+  <!-- OMS pods flanking the rear -->
+  <ellipse class="o-body-shade" cx="57" cy="132" rx="10" ry="15" transform="rotate(-12 57 132)"/>
+  <ellipse class="o-body-shade" cx="103" cy="132" rx="10" ry="15" transform="rotate(12 103 132)"/>
+  <circle class="o-grey" cx="54" cy="146" r="3"/>
+  <circle class="o-grey" cx="106" cy="146" r="3"/>
+
+  <!-- Rear engine cluster: 3 main bells (1 upper, 2 lower) -->
+  <ellipse class="o-navy" cx="80" cy="140" rx="9.5" ry="9"/>
+  <ellipse class="o-bell" cx="80" cy="140" rx="6" ry="5.5"/>
+  <ellipse class="o-dark" cx="80" cy="140" rx="3" ry="2.8"/>
+
+  <ellipse class="o-navy" cx="67" cy="152" rx="9.5" ry="9"/>
+  <ellipse class="o-bell" cx="67" cy="152" rx="6" ry="5.5"/>
+  <ellipse class="o-dark" cx="67" cy="152" rx="3" ry="2.8"/>
+
+  <ellipse class="o-navy" cx="93" cy="152" rx="9.5" ry="9"/>
+  <ellipse class="o-bell" cx="93" cy="152" rx="6" ry="5.5"/>
+  <ellipse class="o-dark" cx="93" cy="152" rx="3" ry="2.8"/>
+</svg>

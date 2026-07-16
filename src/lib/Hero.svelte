@@ -1,6 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import moonUrl from '../assets/moon.svg'
+  import shuttleOrbitUrl from '../assets/shuttle-orbit.svg'
+  import { missionFlown } from './launchStore'
+
+  // Plays the one-shot "now in orbit" payoff. The mission flag latches the
+  // moment the Contact-section rocket flies, but the fly-by holds until the
+  // hero is actually on screen — otherwise the 10s animation would finish
+  // unseen long before the user scrolls back up.
+  let orbitActive = false
+  let heroSection: HTMLElement
+  let heroVisible = false
+  $: if ($missionFlown && heroVisible && !orbitActive) orbitActive = true
 
   let canvas: HTMLCanvasElement
   let stars: { x: number; y: number; r: number; a: number; s: number }[] = []
@@ -63,10 +74,18 @@
       scrollY = window.scrollY
     }
     window.addEventListener('scroll', handleScroll, { passive: true })
+    const heroObserver = new IntersectionObserver(
+      ([entry]) => {
+        heroVisible = entry.isIntersecting
+      },
+      { threshold: 0.35 },
+    )
+    heroObserver.observe(heroSection)
     return () => {
       cancelAnimationFrame(animationId)
       window.removeEventListener('resize', resize)
       window.removeEventListener('scroll', handleScroll)
+      heroObserver.disconnect()
     }
   })
 
@@ -75,12 +94,19 @@
   }
 </script>
 
-<section class="hero">
+<section class="hero" bind:this={heroSection}>
   <canvas bind:this={canvas} class="starfield"></canvas>
 
   <!-- Moon -->
   <div class="moon" style="--moon-offset-x: {moonOffsetX}px; --moon-offset-y: {moonOffsetY}px; --parallax-y: {scrollY * 0.60}px;">
     <img src={moonUrl} alt="" aria-hidden="true" />
+  </div>
+
+  <!-- Orbit payoff — shuttle recedes toward the moon once a mission flies -->
+  <div class="orbit-layer" class:play={orbitActive} aria-hidden="true">
+    <img class="orbit-shuttle" src={shuttleOrbitUrl} alt="" />
+    <span class="orbit-glint"></span>
+    <span class="orbit-dot"></span>
   </div>
 
   <!-- Content -->
@@ -167,6 +193,118 @@
     50% { transform: translate3d(var(--moon-offset-x, 0), calc(var(--moon-offset-y, 0) - 6px + var(--parallax-y, 0px)), 0); }
   }
 
+  /* ── Orbit payoff ──
+     A layer over the hero (above the starfield/moon, below the content)
+     that plays exactly once when .play is toggled on. Nothing animates
+     until then, so it stays invisible and inert on load. */
+  .orbit-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  /* The receding orbiter: fades in lower-left, arcs up toward the moon
+     while scaling ~90px → ~8px and rotating slightly, then winks out. */
+  .orbit-shuttle {
+    position: absolute;
+    left: 6%;
+    top: 74%;
+    width: 56px;
+    height: auto;
+    opacity: 0;
+    transform-origin: center;
+    filter: brightness(1) drop-shadow(0 0 6px rgba(245, 240, 232, 0.25));
+    will-change: transform, opacity, filter;
+  }
+  /* linear timing — the deceleration is baked into the keyframe spacing
+     below, so it keeps easing off all the way to the moon */
+  .orbit-layer.play .orbit-shuttle {
+    animation: orbit-fly 16s linear forwards;
+  }
+
+  /* Covers most of the distance in the first half, then keeps slowing
+     while it shrinks and dims — reads as receding into the distance.
+     Waypoints follow a gently bowed arc toward the moon. */
+  @keyframes orbit-fly {
+    0% {
+      transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
+      opacity: 0;
+      filter: brightness(1) drop-shadow(0 0 6px rgba(245, 240, 232, 0.25));
+    }
+    6% { opacity: 1; }
+    25% {
+      /* ~45% of the path already behind it */
+      transform: translate3d(29vw, -31vh, 0) scale(0.55) rotate(-11deg);
+      opacity: 1;
+      filter: brightness(0.95) drop-shadow(0 0 5px rgba(245, 240, 232, 0.22));
+    }
+    50% {
+      transform: translate3d(47vw, -46vh, 0) scale(0.3) rotate(-18deg);
+      opacity: 0.95;
+      filter: brightness(0.85) drop-shadow(0 0 4px rgba(245, 240, 232, 0.18));
+    }
+    75% {
+      transform: translate3d(58vw, -52vh, 0) scale(0.15) rotate(-22deg);
+      opacity: 0.8;
+      filter: brightness(0.7) drop-shadow(0 0 3px rgba(245, 240, 232, 0.12));
+    }
+    93% {
+      transform: translate3d(64vw, -54.6vh, 0) scale(0.08) rotate(-25deg);
+      opacity: 0.55;
+      filter: brightness(0.55) drop-shadow(0 0 2px rgba(245, 240, 232, 0.08));
+    }
+    100% {
+      transform: translate3d(65vw, -55vh, 0) scale(0.07) rotate(-25deg);
+      opacity: 0;
+      filter: brightness(0.5) drop-shadow(0 0 2px rgba(245, 240, 232, 0.05));
+    }
+  }
+
+  /* Tiny white glint at the moon's edge the instant the shuttle arrives. */
+  .orbit-glint {
+    position: absolute;
+    left: 70.5%;
+    top: 20%;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 8px 2px rgba(255, 255, 255, 0.9);
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  .orbit-layer.play .orbit-glint {
+    animation: orbit-glint 1.3s ease-out 15.2s 1 forwards;
+  }
+  @keyframes orbit-glint {
+    0%   { opacity: 0; transform: scale(0.2); }
+    35%  { opacity: 1; transform: scale(1.15); }
+    100% { opacity: 0; transform: scale(0.4); }
+  }
+
+  /* Faint dot that stays "parked" near the moon afterwards, in orbit. */
+  .orbit-dot {
+    position: absolute;
+    left: 71%;
+    top: 21%;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: rgba(245, 240, 232, 0.9);
+    box-shadow: 0 0 4px 1px rgba(245, 240, 232, 0.5);
+    opacity: 0;
+  }
+  .orbit-layer.play .orbit-dot {
+    animation: orbit-park 6s ease-in-out 16.2s infinite;
+  }
+  /* start == end so the infinite loop breathes without flickering to 0 */
+  @keyframes orbit-park {
+    0%, 100% { opacity: 0.5; }
+    50%      { opacity: 0.25; }
+  }
+
   .hero-content {
     position: relative;
     z-index: 3;
@@ -204,13 +342,6 @@
     background-clip: text;
   }
 
-  .subtitle {
-    font-size: clamp(1rem, 2vw, 1.2rem);
-    color: var(--text-muted);
-    max-width: 540px;
-    margin: 0 auto 2rem;
-    line-height: 1.7;
-  }
 
   .scroll-btn {
     display: inline-flex;
