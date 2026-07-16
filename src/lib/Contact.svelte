@@ -1406,6 +1406,15 @@
             >
               {formSubmitting ? 'Sending...' : 'Send Message'}
             </button>
+
+            <button
+              type="button"
+              class="just-launch-btn"
+              onclick={justLaunch}
+              disabled={rocketState === 'launching' || rocketState === 'flying'}
+            >
+              {countdownText || 'I just want to launch the Rocket 🚀'}
+            </button>
           </form>
         {/if}
       </div>
@@ -2145,14 +2154,49 @@
   }
 
   @media (max-width: 700px) {
+    /* Trim the side gutters right down — the card was cramped against
+       them — and pin the layout to the top so the form floats above the
+       pad rather than sitting vertically centred over the shuttle. */
+    .contact {
+      padding: 2rem 0.85rem;
+      align-items: flex-start;
+    }
     .contact-layout {
       flex-direction: column;
+      justify-content: flex-start;
+      align-items: center;
     }
-    .shuttle-container {
-      display: none;
+
+    /* Scale up the whole pad scene to fill the taller portrait frame.
+       The shuttle, the launchpad art (background / foreground / arm /
+       ambient mist all ride on .launchpad-bg) and the pad beacons are
+       each scaled around the *same* launch-mount point — 38% across,
+       and the mount's height within each layer's own box — so they grow
+       together and the shuttle stays seated on the pad. The flame,
+       smoke and curtain canvases measure the shuttle's live rect every
+       frame, so they follow the larger shuttle automatically. */
+    .launchpad-bg {
+      transform-origin: 38% 62.5%;
+      transform: scale(1.95);
     }
+    .beacon-layer {
+      transform-origin: 38% 85.2%;
+      transform: scale(1.95);
+    }
+    .shuttle {
+      transform-origin: center bottom;
+      transform: scale(1.95);
+    }
+
     .form-side {
-      max-width: 100%;
+      max-width: 420px;
+      width: 100%;
+      margin-right: 0;
+      /* keep the card clear of the enlarged pad scene below it */
+      margin-bottom: 4rem;
+    }
+    .form-card--mobile {
+      padding: 1.25rem 1rem;
     }
 
     /* Swap forms */
